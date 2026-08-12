@@ -10,12 +10,36 @@ readme = "README.md"
 requires-python = ">=3.10"
 license = { text = "MIT" }
 authors = [{ name = "dagcache contributors" }]
-keywords = ["llm", "agents", "cache", "dag", "memoization", "replay"]
+keywords = [
+    "llm",
+    "llm-agents",
+    "agents",
+    "ai-agents",
+    "agent-trajectory",
+    "cache",
+    "caching",
+    "dag",
+    "workflow",
+    "memoization",
+    "replay",
+    "vcr",
+    "cassette",
+    "openai",
+    "langchain",
+    "llmops",
+]
 classifiers = [
     "Development Status :: 3 - Alpha",
     "Intended Audience :: Developers",
     "License :: OSI Approved :: MIT License",
+    "Operating System :: OS Independent",
     "Programming Language :: Python :: 3",
+    "Programming Language :: Python :: 3.10",
+    "Programming Language :: Python :: 3.11",
+    "Programming Language :: Python :: 3.12",
+    "Programming Language :: Python :: 3.13",
+    "Topic :: Software Development :: Libraries :: Python Modules",
+    "Topic :: Scientific/Engineering :: Artificial Intelligence",
 ]
 
 [project.optional-dependencies]

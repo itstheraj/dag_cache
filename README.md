@@ -1,31 +1,63 @@
-# dagcache
+<div align="center">
 
-**VCR cassettes for agent trajectories.** Watch an agent run, infer the DAG
-of tool/LLM calls it made, freeze the good ones, and replay them on repeat
-tasks — the LLM only fires for genuinely new paths.
+# 🧊 dagcache
 
-Luigi inverts here: Luigi makes you *declare* the DAG up front. dagcache
-*learns* the DAG from observed agent behavior and solidifies it once proven.
+**Record your AI agent once. Replay it on every repeat task.**
+
+Agents waste time and money re-planning tasks they've already solved.
+dagcache watches an agent run, remembers the steps it took, and replays those
+steps the next time a similar task comes in — the LLM only gets called for
+genuinely new situations.
+
+[![PyPI](https://img.shields.io/pypi/v/dagcache)](https://pypi.org/project/dagcache/)
+[![Python](https://img.shields.io/badge/python-%3E%3D3.10-blue)](https://www.python.org/)
+[![License: MIT](https://img.shields.io/badge/license-MIT-green)](LICENSE)
+[![Dependencies](https://img.shields.io/badge/runtime%20deps-zero-brightgreen)](pyproject.toml)
+
+<img src="assets/demo.gif" alt="dagcache demo" width="800">
+
+</div>
+
+---
+
+## 💡 The idea
+
+Workflow tools like [Luigi](https://github.com/spotify/luigi) make you write
+out the whole workflow up front. dagcache flips that around: it **watches your
+agent work and learns the workflow on its own**. Once a way of solving a task
+proves it works, dagcache saves it and reuses it — like
+[VCR](https://github.com/vcr/vcr) cassettes, but for agent behavior instead of
+HTTP.
 
 ```
+run agent once  ──▶  save the steps it took  ──▶  approve the winning route
+                                                        │
+        similar task comes in  ──▶  replay the steps (no planning LLM call)
+                                                        │
+        something changed in the world?  ──▶  fall back to the live agent
+```
+
+## 🚀 Install
+
+```bash
 pip install dagcache        # zero runtime dependencies
 ```
 
-## Quickstart
+## ⚡ Quickstart
 
 ```python
 import dagcache
 
-@dagcache.tool(pure=True)            # read-only: skippable in frozen replay
+@dagcache.tool(pure=True)            # read-only: safe to skip in frozen replay
 def search_kb(query: str) -> str: ...
 
-@dagcache.tool(pure=False)           # side effects: re-executed on replay
+@dagcache.tool(pure=False)           # has side effects: always runs for real
 def send_reply(ticket_id: str, body: str) -> str: ...
 
-@dagcache.llm(planning=True)         # decides what to do: never re-executed
+@dagcache.llm(planning=True)         # decides what to do: skipped on replay
 def plan(prompt: str) -> str: ...
 
-@dagcache.llm                        # writes user-facing text: re-run fresh
+@dagcache.llm                        # writes user-facing text: runs fresh
 def draft(prompt: str) -> str: ...
 
 @dagcache.agent
@@ -37,123 +69,136 @@ def resolve_ticket(ticket: dict) -> str:
     return draft(f"article={article}; status={order['status']}")
 ```
 
-- **Run 1** executes live and records the path `search_kb > fetch_order >
-  send_reply` (+ the LLM nodes) into `.dagcache/store.db`.
-- **Run 2** with a different ticket of the same *shape* replays the cached
-  path: tools re-execute with bindings resolved against the new ticket
-  (`order_id` comes from the new input, not the recording), the planning
-  LLM never runs, and the final draft is re-generated with fresh data
-  patched into its prompt.
-- **Run 3**, if the world drifted (a tool returns a different shape, a
-  binding can't resolve, a tool raises), the replay aborts and the live
-  agent takes over automatically. You can never do worse than the status
-  quo.
-
-Try it: `python examples/ticket_agent.py`
-
-## What gets cached, exactly
-
-The cache key is **the chain, not the args**: task kind (the `@agent`
-function) + structural fingerprint of the inputs (types and keys, never
-values). The cached artifact is a **DAG skeleton** whose nodes are tool/LLM
-calls with args stored as *bindings*:
-
-| Binding | Meaning at replay |
+| Run | What happens |
 |---|---|
-| `input` | walked out of the new call's arguments (`ticket.title`) |
-| `node`  | walked out of an upstream node's *fresh* output (`n1.order_id`) |
-| `literal` | the LLM made this value up; reused as-is (with recorded→fresh substrings patched) |
+| **Run 1** 🎬 | The agent runs normally. dagcache records the steps it took (`search_kb > fetch_order > send_reply`, plus the LLM calls) into `.dagcache/store.db`. |
+| **Run 2** 🔁 | A new ticket of the same *shape* comes in. dagcache replays the saved steps: tools run again, but with values taken from the **new** ticket (e.g. its `order_id`), the planning LLM is never called, and the final reply is written fresh using the new data. |
+| **Run 3** 🌍 | The world changed (a tool returns something unexpected, a value is missing, a tool crashes). Replay stops and the live agent takes over automatically. **Worst case, dagcache behaves exactly like your agent does today.** |
 
-If two different chains solve the same task shape, both are stored and
-ranked by observed success (hits + recordings); `dagcache approve` pins the
-canonical one. A staging DAG that keeps diverging dies after 3 fallbacks.
+▶️ **Try it:** `python examples/ticket_agent.py`
 
-## Replay modes
+## 🧠 What gets saved, exactly
 
-- **verified** (default): re-execute tools with fresh args (real side
-  effects, fresh data), skip planning LLM calls, re-run output LLM calls.
-  Luigi's worker, where the DAG is the plan.
-- **frozen**: execute nothing, return recorded outputs. Luigi's
-  `output().exists()` across the whole graph — VCR mode for tests/CI.
+dagcache doesn't cache answers — it caches **the plan**. Two things decide
+whether a saved plan applies:
+
+1. **which task it is** (the `@agent` function), and
+2. **the shape of the inputs** (their types and field names — never the
+   actual values).
+
+The saved plan is a graph of steps. Each step's arguments are stored as
+references, not fixed values:
+
+| Reference type | What it means at replay |
+|---|---|
+| `input` | take it from the new task's input (e.g. `ticket.title`) |
+| `node`  | take it from an earlier step's **fresh** result (e.g. `n1.order_id`) |
+| `literal` | a value the LLM made up; reused as-is (with old→new values swapped in) |
+
+If the agent finds two different ways to solve the same kind of task, both are
+kept and ranked by how often they work. `dagcache approve` locks in the
+winner. A saved plan that keeps failing is dropped after 3 failures.
+
+## 🔁 Replay modes
+
+- **verified** *(default)* — tools run for real with fresh values (real side
+  effects, fresh data), planning LLM calls are skipped, text-writing LLM
+  calls run again. Think of it as [Luigi](https://github.com/spotify/luigi)'s
+  worker, where the learned plan is the workflow.
+- **frozen** — nothing runs; recorded results are returned as-is. Like
+  Luigi's `output().exists()` across the whole graph —
+  [VCR](https://github.com/vcr/vcr) mode, great for tests and CI.
 
 ```python
 dagcache.configure(db_path=".dagcache/store.db", replay_mode="frozen")
 # or env: DAGCACHE_MODE=record|off, DAGCACHE_REPLAY=verified|frozen, DAGCACHE_DB=...
 ```
 
-Same-shaped but semantically different tasks need a discriminator — its
-*value* joins the fingerprint:
+Two tasks can have the same input *shape* but mean different things (a refund
+ticket vs. a complaint). Give the agent a discriminator — its value becomes
+part of what makes a task unique:
 
 ```python
 @dagcache.agent(key=lambda ticket: ticket["category"])
 ```
 
-## CLI
+## 🛠 CLI
 
-```
-dagcache ls                    # id, status, recordings, hits, fallbacks, path
-dagcache show 3                # full DAG JSON
-dagcache approve 3             # mark canonical (survives fallback storms)
-dagcache demote 3              # back to staging
-dagcache diff 3 7              # unified diff of two candidate paths
-dagcache export 3 -o c.json    # cassette for code review
+```bash
+dagcache ls                    # id, status, recordings, hits, failures, steps
+dagcache show 3                # full plan JSON
+dagcache approve 3             # lock in the winning route
+dagcache demote 3              # back to probation
+dagcache diff 3 7              # compare two candidate routes
+dagcache export 3 -o c.json    # save a cassette for code review
 dagcache import c.json
 dagcache prune --status dead --older-than 30
 ```
 
-## Framework integrations
+## 🔌 Framework integrations
 
-**OpenAI** (duck-typed — works with any `.chat.completions.create` client):
+**[OpenAI](https://github.com/openai/openai-python)** (duck-typed — works with
+any `.chat.completions.create` client):
 
 ```python
 from dagcache.adapters.openai import wrap_client
 client = wrap_client(OpenAI())   # role="auto"|"planning"|"output"
 ```
 
-Responses containing `tool_calls` are recorded as planning nodes (never
-re-executed); text responses as output nodes (re-executed at verified
-replay with prompts patched to fresh data).
+Responses containing `tool_calls` are treated as planning (skipped on
+replay); text responses as output writing (run again on replay, with the
+prompt updated to fresh data).
 
-**LangChain** (duck-typed — no langchain import required):
+**[LangChain](https://github.com/langchain-ai/langchain)** (duck-typed — no
+langchain import required):
 
 ```python
 from dagcache.adapters.langchain import wrap_tools, wrap_llm
 agent = build_agent(llm=wrap_llm(ChatOpenAI(...)), tools=wrap_tools([...]))
 ```
 
-## Honest limitations
+## ⚠️ Honest limitations
 
-- **Fuzzy matching is off by default.** Matching is exact on (task kind,
-  input shape, key). Semantic/embedding matching is deliberately not in
-  v0.1 — a fuzzy hit replaying an *effectful* path is how the cache refunds
-  the wrong customer.
-- **Side effects are real.** Verified replay re-executes effectful tools.
-  That's automation, not caching. Mark them `pure=False` and keep fuzzy
+- **Matching is exact, not "similar".** A saved plan only applies when the
+  task type, input shape, and key all match exactly. Fuzzy/embedding matching
+  is deliberately not in v0.1 — a "close enough" match replaying a path with
+  real side effects is how the cache refunds the wrong customer.
+- **Side effects really happen.** Verified replay runs effectful tools for
+  real. That's automation, not caching. Mark them `pure=False` and keep fuzzy
   matching off.
-- **Synthesized literals can go stale** if they embed values that came
-  neither from inputs nor tool outputs (e.g. a date the LLM invented).
-  They replay verbatim; divergence checks only cover output *shape*.
-- **Prompt patching is heuristic**: recorded→fresh value substitution with
-  word-boundary matching. Drift beyond shape (e.g. a price that changed but
-  still looks like a price) is not detected.
-- **The agent function must be replayable-shaped**: its return value should
-  be its final LLM/tool call's result. Custom post-processing after the
-  last call won't run at replay.
-- Cache poisoning is a thing: scope your store per principal if agent
-  inputs are attacker-controlled, and `approve` paths before production.
+- **Made-up values can go stale.** If the LLM invented a value that came from
+  neither the inputs nor tool results (e.g. a date it guessed), it's replayed
+  verbatim. Change detection only checks the *shape* of results.
+- **Prompt updating is a heuristic**: old→new value substitution with
+  word-boundary matching. A value that changed but still *looks* the same
+  (e.g. a price) is not detected.
+- **The agent function must return its final call's result.** Custom
+  post-processing after the last LLM/tool call won't run on replay.
+- **Cache poisoning is a thing**: if agent inputs are attacker-controlled,
+  keep a separate store per principal and `approve` plans before production.
 
-## Ruby
+## 💎 Ruby
 
-A RubyLLM plugin on the same mental model lives in the companion repo
-**`ruby_llm-dagcache`** — YAML cassettes, `DagCache.watch(agent)`,
-automatic `RubyLLM::Tool` instrumentation.
+A [RubyLLM](https://github.com/crmne/ruby_llm) plugin on the same mental
+model lives in the companion repo
+**[`ruby_llm-dagcache`](https://github.com/itstheraj/ruby_llm-dagcache)** —
+YAML cassettes, `DagCache.watch(agent)`, automatic `RubyLLM::Tool`
+instrumentation.
 
-## Prior art
+## 📚 Prior art
 
 - [Agentic Plan Caching (arXiv 2506.14852)](https://arxiv.org/abs/2506.14852)
   — research prototype; still spends an LLM call adapting templates.
 - [Agent Workflow Memory (arXiv 2409.07429)](https://arxiv.org/abs/2409.07429)
   — injects past workflows into prompts; doesn't skip the agent.
-- GPTCache / LangChain caches — single LLM-call semantic caching.
-- LangGraph checkpointing / Temporal — resumption, not cross-task reuse.
-- vcrpy / VCR — the right mental model, at the wrong layer.
+- [GPTCache](https://github.com/zilliztech/GPTCache) / [LangChain](https://github.com/langchain-ai/langchain)
+  caches — cache single LLM calls by semantic similarity.
+- [LangGraph](https://github.com/langchain-ai/langgraph) checkpointing /
+  [Temporal](https://github.com/temporalio/temporal) — resume interrupted
+  runs, not reuse across tasks.
+- [vcrpy](https://github.com/kevin1024/vcrpy) / [VCR](https://github.com/vcr/vcr)
+  — the right mental model, at the wrong layer.
+
+## 📄 License
+
+[MIT](LICENSE) © dagcache contributors
