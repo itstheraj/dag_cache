@@ -1,0 +1,15 @@
+__pycache__/
+*.py[cod]
+*.egg-info/
+.pytest_cache/
+.ruff_cache/
+.mypy_cache/
+build/
+dist/
+.venv/
+venv/
+
+# dagcache runtime stores
+.dagcache/
+*.db-journal
+examples/.demo-store.db
